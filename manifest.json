@@ -1,0 +1,8 @@
+{
+  "name":"TaskRoom",
+  "short_name":"TaskRoom",
+  "start_url":".",
+  "display":"standalone",
+  "background_color":"#f6f7fb",
+  "theme_color":"#4f46e5"
+}
