@@ -1,0 +1,71 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function self(uid) { return signedIn() && request.auth.uid == uid; }
+    function roomHost(roomId) {
+      return signedIn() && get(/databases/$(database)/documents/rooms/$(roomId)).data.host == request.auth.uid;
+    }
+    function roomMember(roomId) {
+      return signedIn() && exists(/databases/$(database)/documents/rooms/$(roomId)/members/$(request.auth.uid));
+    }
+    function taskPath(roomId, tabId, subId, taskId) {
+      return /databases/$(database)/documents/rooms/$(roomId)/tabs/$(tabId)/subs/$(subId)/tasks/$(taskId);
+    }
+
+    match /users/{uid} {
+      allow create: if self(uid);
+      allow read: if self(uid);
+      allow update: if self(uid);
+      allow delete: if false;
+    }
+
+    // Used only to find a room by its 6-digit code. The password is stored as a SHA-256 hash.
+    // A future server-side join endpoint should replace client-side password verification for stronger protection.
+    match /roomCodes/{code} {
+      allow read: if signedIn();
+      allow create: if signedIn() && request.resource.data.roomId != null;
+      allow update, delete: if false;
+    }
+
+    match /rooms/{roomId} {
+      allow read: if roomMember(roomId) || roomHost(roomId);
+      allow create: if signedIn() && request.resource.data.host == request.auth.uid;
+      allow update, delete: if roomHost(roomId);
+
+      match /members/{uid} {
+        allow read: if roomMember(roomId) || roomHost(roomId);
+        allow create: if signedIn() && uid == request.auth.uid && exists(/databases/$(database)/documents/rooms/$(roomId));
+        allow update: if roomHost(roomId);
+        allow delete: if roomHost(roomId) && uid != request.auth.uid;
+      }
+
+      match /tabs/{tabId} {
+        allow read: if roomMember(roomId) || roomHost(roomId);
+        allow create, update, delete: if roomHost(roomId);
+
+        match /subs/{subId} {
+          allow read: if roomMember(roomId) || roomHost(roomId);
+          allow create, update, delete: if roomHost(roomId);
+
+          match /tasks/{taskId} {
+            allow get, list: if roomHost(roomId) || (roomMember(roomId) && resource.data.assigned == request.auth.uid);
+            allow create: if roomHost(roomId)
+              && request.resource.data.status == 'pending'
+              && exists(/databases/$(database)/documents/rooms/$(roomId)/members/$(request.resource.data.assigned));
+            allow update: if roomHost(roomId)
+              || (roomMember(roomId)
+                  && resource.data.assigned == request.auth.uid
+                  && request.resource.data.assigned == request.auth.uid
+                  && request.resource.data.title == resource.data.title
+                  && request.resource.data.desc == resource.data.desc
+                  && request.resource.data.status == 'completed');
+            allow delete: if roomHost(roomId);
+          }
+        }
+      }
+    }
+
+    match /{document=**} { allow read, write: if false; }
+  }
+}

@@ -1,110 +1,223 @@
-const KEY="taskroom_v1";
-let db=JSON.parse(localStorage.getItem(KEY)||"null")||{users:{},rooms:{},session:null};
-let rid=null,ti=0,si=0;
-const A=document.getElementById("app");
-const save=()=>localStorage.setItem(KEY,JSON.stringify(db));
-const id=p=>p+"_"+Math.random().toString(36).slice(2,9);
-const me=()=>db.users[db.session];
-const val=i=>document.getElementById(i)?.value.trim()||"";
-const esc=x=>String(x??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[m]));
-const B=(t,f,c="btn")=>`<button class="${c}" onclick="${f}">${t}</button>`;
+import { initializeApp } from "https://www.gstatic.com/firebasejs/12.19.0/firebase-app.js";
+import {
+  getAuth, onAuthStateChanged, createUserWithEmailAndPassword,
+  signInWithEmailAndPassword, signOut, updateProfile
+} from "https://www.gstatic.com/firebasejs/12.19.0/firebase-auth.js";
+import {
+  getFirestore, doc, getDoc, setDoc, updateDoc, deleteDoc,
+  collection, getDocs, addDoc, query, where, orderBy,
+  serverTimestamp, arrayUnion, writeBatch
+} from "https://www.gstatic.com/firebasejs/12.19.0/firebase-firestore.js";
 
-function shell(x){A.innerHTML=`<header class="top"><b class="brand">✓ TaskRoom</b><div>${me()?B("Home","home()")+B("Logout","logout()"):""}</div></header><main class="page">${x}</main>`}
-function welcome(){shell(`<div class="hero card"><div style="font-size:55px">✓</div><h1>TaskRoom</h1><p class="muted">Organize tasks. Work together. Track progress.</p><div class="row" style="justify-content:center">${B("Create account","register()","btn primary")}${B("Log in","login()")}</div></div>`)}
-function field(label,id,type="text"){return `<div class="field"><label>${label}</label><input id="${id}" type="${type}"></div>`}
+const firebaseConfig = {
+  apiKey: "AIzaSyBcmpslsqjlwp5JDABBa4P3BlaKEmPL1kw",
+  authDomain: "taskroom-736c1.firebaseapp.com",
+  projectId: "taskroom-736c1",
+  storageBucket: "taskroom-736c1.firebasestorage.app",
+  messagingSenderId: "595374705736",
+  appId: "1:595374705736:web:77527d0891742c2c2a9c7d"
+};
 
-function login(){shell(`<div class="card" style="max-width:470px;margin:30px auto"><h2>Log in</h2>${field("Email","email","email")}${field("Password","password","password")}${B("Log in","doLogin()","btn primary")}</div>`)}
-function register(){shell(`<div class="card" style="max-width:470px;margin:30px auto"><h2>Create account</h2>${field("Name","name")}${field("Email","email","email")}${field("Password","password","password")}${B("Create account","doRegister()","btn primary")}</div>`)}
-function doRegister(){
- const n=val("name"),e=val("email").toLowerCase(),p=val("password");
- if(!n||!e||p.length<4)return alert("Enter name, email and a password of at least 4 characters.");
- if(Object.values(db.users).some(u=>u.email===e))return alert("Email already registered.");
- const uid=id("user");db.users[uid]={id:uid,name:n,email:e,password:p};db.session=uid;save();home();
-}
-function doLogin(){
- const e=val("email").toLowerCase(),p=val("password"),u=Object.values(db.users).find(x=>x.email===e&&x.password===p);
- if(!u)return alert("Invalid email or password.");
- db.session=u.id;save();home();
-}
-function logout(){db.session=null;save();welcome()}
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const A = document.getElementById("app");
+let currentUser = null;
+let rid = null, ti = 0, si = 0;
+let roomCache = null, tabCache = [], subCache = [], taskCache = [];
 
-function home(){
- const rooms=Object.values(db.rooms).filter(r=>r.members[db.session]);
- shell(`<div class="row between"><div><h2>Hello, ${esc(me().name)} 👋</h2><p class="muted">Create or join a room.</p></div><div>${B("+ Create room","createRoomModal()","btn primary")}${B("Join room","joinRoomModal()")}</div></div>
- <div class="grid g2" style="margin-top:15px">${rooms.length?rooms.map(r=>`<div class="card"><div class="row between"><h3>${esc(r.name)}</h3><span class="badge">${r.host===db.session?"HOST":"MEMBER"}</span></div><p class="muted">Room ID: <b>${r.code}</b></p>${B("Open room",`openRoom('${r.id}')`,"btn primary")}</div>`).join(""):`<div class="card empty">No rooms yet.</div>`}</div>`)
+const val = i => document.getElementById(i)?.value.trim() || "";
+const esc = x => String(x ?? "").replace(/[&<>"']/g, m => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[m]));
+const id = p => p + "_" + Math.random().toString(36).slice(2,9);
+const B = (t,f,c="btn") => `<button class="${c}" onclick="${f}">${t}</button>`;
+const ts = x => x?.toDate ? x.toDate() : null;
+
+function shell(x){
+  A.innerHTML = `<header class="top"><b class="brand">✓ TaskRoom</b><div>${currentUser ? B("Home","home()")+B("Logout","logout()") : ""}</div></header><main class="page">${x}</main>`;
 }
+function field(label,id,type="text",placeholder=""){return `<div class="field"><label>${label}</label><input id="${id}" type="${type}" placeholder="${esc(placeholder)}"></div>`}
+function loading(t="Loading…"){A.innerHTML=`<div class="loading">${esc(t)}</div>`}
+function friendlyError(e){
+  const m = e?.code || e?.message || "Unknown error";
+  const map = {
+    "auth/invalid-credential":"Email or password is incorrect.",
+    "auth/email-already-in-use":"That email is already registered.",
+    "auth/weak-password":"Use a stronger password.",
+    "auth/invalid-email":"Please enter a valid email address.",
+    "permission-denied":"Firebase denied this action. Check the Firestore rules."
+  };
+  return map[m] || (m.includes("permission-denied") ? map["permission-denied"] : m);
+}
+function showError(e){console.error(e);alert(friendlyError(e));}
+
+function welcome(){
+  shell(`<div class="hero card"><div style="font-size:55px">✓</div><h1>TaskRoom</h1><p class="muted">Organize tasks. Work together. Track progress.</p><div class="row" style="justify-content:center">${B("Create account","register()","btn primary")}${B("Log in","login()")}</div></div>`);
+}
+function login(){shell(`<div class="card form-card"><h2>Log in</h2>${field("Email","email","email")}${field("Password","password","password")}${B("Log in","doLogin()","btn primary")}</div>`)}
+function register(){shell(`<div class="card form-card"><h2>Create account</h2>${field("Name","name")}${field("Email","email","email")}${field("Password","password","password","At least 6 characters")}${B("Create account","doRegister()","btn primary")}</div>`)}
+
+async function doRegister(){
+  const n=val("name"), e=val("email").toLowerCase(), p=val("password");
+  if(!n||!e||p.length<6)return alert("Enter name, email and a password of at least 6 characters.");
+  try{
+    const cred=await createUserWithEmailAndPassword(auth,e,p);
+    await updateProfile(cred.user,{displayName:n});
+    await setDoc(doc(db,"users",cred.user.uid),{name:n,email:e,roomIds:[],createdAt:serverTimestamp()});
+    currentUser=cred.user; await home();
+  }catch(e){showError(e)}
+}
+async function doLogin(){
+  const e=val("email").toLowerCase(),p=val("password");
+  if(!e||!p)return alert("Enter email and password.");
+  try{await signInWithEmailAndPassword(auth,e,p)}catch(e){showError(e)}
+}
+async function logout(){await signOut(auth)}
+
+async function getUserDoc(){
+  if(!currentUser)return null;
+  const s=await getDoc(doc(db,"users",currentUser.uid));
+  return s.exists()?s.data():{name:currentUser.displayName||"User",email:currentUser.email,roomIds:[]};
+}
+async function home(){
+  if(!currentUser)return welcome();
+  loading("Loading your rooms…");
+  try{
+    const u=await getUserDoc(), ids=u.roomIds||[];
+    const rooms=[];
+    for(const id0 of ids){const s=await getDoc(doc(db,"rooms",id0)); if(s.exists())rooms.push({id:id0,...s.data()})}
+    shell(`<div class="row between"><div><h2>Hello, ${esc(u.name||currentUser.displayName||"User")} 👋</h2><p class="muted">Create or join a room.</p></div><div>${B("+ Create room","createRoomModal()","btn primary")}${B("Join room","joinRoomModal()")}</div></div>
+      <div class="grid g2" style="margin-top:15px">${rooms.length?rooms.map(r=>`<div class="card"><div class="row between"><h3>${esc(r.name)}</h3><span class="badge">${r.host===currentUser.uid?"HOST":"MEMBER"}</span></div><p class="muted">Room ID: <b>${esc(r.code)}</b></p>${B("Open room",`openRoom('${r.id}')`,"btn primary")}</div>`).join(""):`<div class="card empty">No rooms yet.</div>`}</div>`);
+  }catch(e){showError(e);welcome()}
+}
+
 function modal(title,body){const d=document.createElement("div");d.className="modal";d.innerHTML=`<div><div class="row between"><h2>${title}</h2>${B("×","this.closest('.modal').remove()")}</div>${body}</div>`;document.body.appendChild(d)}
-function createRoomModal(){modal("Create room",field("Room name","roomName")+field("Room password","roomPass","password")+B("Create room","createRoom()","btn primary"))}
-function createRoom(){
- const n=val("roomName"),p=val("roomPass");if(!n||!p)return alert("Room name and password are required.");
- let code;do{code=String(Math.floor(100000+Math.random()*900000))}while(Object.values(db.rooms).some(r=>r.code===code));
- const r={id:id("room"),name:n,password:p,code,host:db.session,members:{[db.session]:{role:"host"}},tabs:[]};
- addTab(r,"Study");db.rooms[r.id]=r;save();document.querySelector(".modal").remove();openRoom(r.id)
-}
-function addTab(r,name){
- const tab={id:id("tab"),name,subs:[]};
- for(let i=1;i<=6;i++)tab.subs.push({id:id("sub"),name:"Sub-tab "+i,tasks:[]});
- r.tabs.push(tab)
-}
-function joinRoomModal(){modal("Join room",field("Room ID","joinCode")+field("Room password","joinPass","password")+B("Join room","joinRoom()","btn primary"))}
-function joinRoom(){
- const code=val("joinCode"),p=val("joinPass"),r=Object.values(db.rooms).find(x=>x.code===code);
- if(!r||r.password!==p)return alert("Room ID or password is incorrect.");
- r.members[db.session] ||= {role:"member"};save();document.querySelector(".modal").remove();openRoom(r.id)
-}
-function openRoom(id){rid=id;ti=0;si=0;renderRoom()}
-function room(){return db.rooms[rid]}
+function createRoomModal(){modal("Create room",field("Room name","roomName")+field("Room password","roomPass","password","Used when members join")+B("Create room","createRoom()","btn primary"))}
+function joinRoomModal(){modal("Join room",field("Room ID","joinCode","text","6-digit Room ID")+field("Room password","joinPass","password")+B("Join room","joinRoom()","btn primary"))}
 
-function renderRoom(){
- const r=room(),host=r.host===db.session,t=r.tabs[ti],s=t.subs[si];
- let html=`<div class="row between"><div><h2>${esc(r.name)}</h2><small class="muted">Room ID: ${r.code} • ${host?"HOST":"MEMBER"}</small></div>${host?B("+ Task","taskModal()","btn primary"):""}</div>`;
- html+=`<div class="tabs">${r.tabs.map((t,i)=>`<button class="tab ${i===ti?"active":""}" onclick="ti=${i};si=0;renderRoom()">${esc(t.name)}</button>`).join("")}${host?B("+ Tab","addMainTab()"):""}</div>`;
- html+=`<div class="subs">${t.subs.map((s,i)=>`<button class="sub ${i===si?"active":""}" onclick="si=${i};renderRoom()"><b>${esc(s.name)}</b><br><small>${s.tasks.filter(x=>x.assigned===db.session&&x.status!=="approved").length} active</small></button>`).join("")}</div>`;
- html+=host?hostView(r,s):memberView(s);
- shell(html);
+async function sha256(text){
+  const bytes=new TextEncoder().encode(text), hash=await crypto.subtle.digest("SHA-256",bytes);
+  return [...new Uint8Array(hash)].map(b=>b.toString(16).padStart(2,"0")).join("");
 }
-function memberView(s){
- const tasks=s.tasks.filter(t=>t.assigned===db.session);
- const active=tasks.filter(t=>t.status==="pending"||t.status==="returned");
- return `<div class="card" style="margin-top:15px"><h3>My tasks</h3>${active.length?active.map(t=>`<div class="task"><input type="checkbox" onchange="completeTask('${t.id}')"><div><b>${esc(t.title)}</b><div class="muted">${esc(t.desc)}</div>${t.status==="returned"?`<small class="badge returned">Returned${t.reason?": "+esc(t.reason):""}</small>`:""}</div></div>`).join(""):`<div class="empty">No active tasks 🎉</div>`}</div>`
+async function createRoom(){
+  const n=val("roomName"),p=val("roomPass"); if(!n||!p)return alert("Room name and password are required.");
+  try{
+    let code, exists=true;
+    while(exists){code=String(Math.floor(100000+Math.random()*900000));exists=(await getDoc(doc(db,"roomCodes",code))).exists()}
+    const roomRef=doc(collection(db,"rooms"));
+    const passwordHash=await sha256(p);
+    const batch=writeBatch(db);
+    batch.set(roomRef,{name:n,code,host:currentUser.uid,createdAt:serverTimestamp()});
+    batch.set(doc(db,"roomCodes",code),{roomId:roomRef.id,passwordHash,createdAt:serverTimestamp()});
+    batch.set(doc(db,"rooms",roomRef.id,"members",currentUser.uid),{role:"host",joinedAt:serverTimestamp()});
+    const tabRef=doc(collection(roomRef,"tabs"));
+    batch.set(tabRef,{name:"Study",order:0});
+    for(let i=1;i<=6;i++)batch.set(doc(collection(tabRef,"subs")),{name:"Sub-tab "+i,order:i-1});
+    const u=await getUserDoc();
+    batch.update(doc(db,"users",currentUser.uid),{roomIds:arrayUnion(roomRef.id)});
+    await batch.commit();
+    document.querySelector(".modal")?.remove(); await openRoom(roomRef.id);
+  }catch(e){showError(e)}
 }
-function hostView(r,s){
- return `<div class="card" style="margin-top:15px"><div class="row between"><h3>Host review</h3><span class="badge">${s.tasks.length} total</span></div>${s.tasks.length?s.tasks.map(t=>{
- const u=db.users[t.assigned];
- return `<div class="task"><div style="flex:1"><b>${esc(t.title)}</b><div class="muted">${esc(u?.name||"Member")} • ${esc(t.desc)}</div><span class="badge ${t.status}">${t.status}</span>${t.reason?`<div class="muted">Reason: ${esc(t.reason)}</div>`:""}</div><div>${t.status==="completed"?B("Approve",`approveTask('${t.id}')`,"btn success")+B("Return",`returnTask('${t.id}')`,"btn danger"):""}${B("Delete",`deleteTask('${t.id}')`)}</div></div>`
- }).join(""):`<div class="empty">No tasks.</div>`}</div>`
+async function joinRoom(){
+  const code=val("joinCode"),p=val("joinPass"); if(!code||!p)return alert("Enter Room ID and password.");
+  try{
+    const codeSnap=await getDoc(doc(db,"roomCodes",code));
+    if(!codeSnap.exists())return alert("Room ID or password is incorrect.");
+    const codeData=codeSnap.data(), hash=await sha256(p);
+    if(hash!==codeData.passwordHash)return alert("Room ID or password is incorrect.");
+    const roomRef=doc(db,"rooms",codeData.roomId), roomSnap=await getDoc(roomRef);
+    if(!roomSnap.exists())return alert("That room no longer exists.");
+    const memberRef=doc(db,"rooms",codeData.roomId,"members",currentUser.uid);
+    await setDoc(memberRef,{role:"member",joinedAt:serverTimestamp()},{merge:true});
+    await updateDoc(doc(db,"users",currentUser.uid),{roomIds:arrayUnion(codeData.roomId)});
+    document.querySelector(".modal")?.remove(); await openRoom(codeData.roomId);
+  }catch(e){showError(e)}
+}
+
+async function openRoom(id0){rid=id0;ti=0;si=0;await loadRoom();}
+async function loadRoom(){
+  if(!rid)return;
+  loading("Loading room…");
+  try{
+    const r=await getDoc(doc(db,"rooms",rid)); if(!r.exists())return home();
+    roomCache={id:rid,...r.data()};
+    const [tabsSnap]=await Promise.all([getDocs(query(collection(db,"rooms",rid,"tabs"),orderBy("order")))]);
+    tabCache=tabsSnap.docs.map(x=>({id:x.id,...x.data()}));
+    if(!tabCache.length){return alert("This room has no tabs.")}
+    if(ti>=tabCache.length)ti=0;
+    const subSnap=await getDocs(query(collection(db,"rooms",rid,"tabs",tabCache[ti].id,"subs"),orderBy("order")));
+    subCache=subSnap.docs.map(x=>({id:x.id,...x.data()}));
+    if(si>=subCache.length)si=0;
+    await loadTasks(); renderRoom();
+  }catch(e){showError(e);home()}
+}
+async function loadTasks(){
+  const s=subCache[si]; if(!s){taskCache=[];return}
+  const snap=await getDocs(collection(db,"rooms",rid,"tabs",tabCache[ti].id,"subs",s.id,"tasks"));
+  taskCache=snap.docs.map(x=>({id:x.id,...x.data()}));
+}
+function isHost(){return roomCache?.host===currentUser?.uid}
+
+async function renderRoom(){
+  if(!roomCache)return;
+  const t=tabCache[ti],s=subCache[si];
+  const membersSnap=await getDocs(collection(db,"rooms",rid,"members"));
+  const members=membersSnap.docs.map(x=>({id:x.id,...x.data()}));
+  const memberUsers={};
+  for(const m of members){const u=await getDoc(doc(db,"users",m.id));if(u.exists())memberUsers[m.id]=u.data()}
+  let html=`<div class="row between"><div><h2>${esc(roomCache.name)}</h2><small class="muted">Room ID: ${esc(roomCache.code)} • ${isHost()?"HOST":"MEMBER"}</small></div>${isHost()?B("+ Task","taskModal()","btn primary"):""}</div>`;
+  html+=`<div class="tabs">${tabCache.map((x,i)=>`<button class="tab ${i===ti?"active":""}" onclick="switchTab(${i})">${esc(x.name)}</button>`).join("")}${isHost()?B("+ Tab","addMainTab()","btn"):""}</div>`;
+  html+=`<div class="subs">${subCache.map((x,i)=>{const count=taskCache.filter(z=>z.assigned===currentUser.uid&&z.status!=="approved").length;return `<button class="sub ${i===si?"active":""}" onclick="switchSub(${i})"><b>${esc(x.name)}</b><br><small>${i===si?count:""} active</small></button>`}).join("")}</div>`;
+  html+=isHost()?hostView(memberUsers):memberView();
+  shell(html);
+}
+function memberView(){
+  const active=taskCache.filter(t=>t.assigned===currentUser.uid&&(t.status==="pending"||t.status==="returned"));
+  return `<div class="card" style="margin-top:15px"><h3>My tasks</h3>${active.length?active.map(t=>`<div class="task"><input type="checkbox" onchange="completeTask('${t.id}')"><div><b>${esc(t.title)}</b><div class="muted">${esc(t.desc)}</div>${t.status==="returned"?`<small class="badge returned">Returned${t.reason?": "+esc(t.reason):""}</small>`:""}</div></div>`).join(""):`<div class="empty">No active tasks 🎉</div>`}</div>`;
+}
+function hostView(memberUsers){
+  const sorted=[...taskCache].sort((a,b)=>(a.status==="approved")-(b.status==="approved"));
+  return `<div class="card" style="margin-top:15px"><div class="row between"><h3>Host review</h3><span class="badge">${taskCache.length} total</span></div>${sorted.length?sorted.map(t=>{const u=memberUsers[t.assigned];return `<div class="task"><div style="flex:1"><b>${esc(t.title)}</b><div class="muted">${esc(u?.name||"Member")} • ${esc(t.desc)}</div><span class="badge ${t.status}">${t.status}</span>${t.reason?`<div class="muted">Reason: ${esc(t.reason)}</div>`:""}</div><div class="row">${t.status==="completed"?B("Approve",`approveTask('${t.id}')`,"btn success")+B("Return",`returnTask('${t.id}')`,"btn danger"):""}${B("Delete",`deleteTask('${t.id}')`)}</div></div>`}).join(""):`<div class="empty">No tasks.</div>`}</div>`;
 }
 function taskModal(){
- const r=room(),s=r.tabs[ti].subs[si],members=Object.entries(r.members).filter(([uid,m])=>m.role==="member");
- const opts=members.map(([uid])=>`<option value="${uid}">${esc(db.users[uid]?.name||uid)} (${s.tasks.filter(t=>t.assigned===uid&&t.status!=="approved").length}/35)</option>`).join("");
- modal("Create task",field("Task title","taskTitle")+field("Description","taskDesc")+`<div class="field"><label>Assign to member</label><select id="assign">${opts}</select></div>`+(members.length?B("Create task","createTask()","btn primary"):`<p class="muted">Join another account to this room before assigning a task.</p>`))
+  const members=[];
+  modal("Create task",field("Task title","taskTitle")+field("Description","taskDesc")+`<div class="field"><label>Assign to member</label><select id="assign"><option value="">Loading members…</option></select></div>${B("Create task","createTask()","btn primary")}`);
+  getDocs(collection(db,"rooms",rid,"members")).then(async snap=>{
+    const opts=[];for(const d of snap.docs){if(d.data().role!=="member")continue;const u=await getDoc(doc(db,"users",d.id));const name=u.exists()?(u.data().name||u.data().email):d.id;const count=taskCache.filter(t=>t.assigned===d.id&&t.status!=="approved").length;opts.push(`<option value="${d.id}" ${count>=35?"disabled":""}>${esc(name)} (${count}/35)</option>`)}
+    const sel=document.getElementById("assign");if(sel)sel.innerHTML=opts.length?opts.join(""):`<option value="">No members yet</option>`;
+  });
 }
-function createTask(){
- const s=room().tabs[ti].subs[si],assigned=document.getElementById("assign")?.value;
- if(!assigned)return alert("Add a member first.");
- const count=s.tasks.filter(t=>t.assigned===assigned&&t.status!=="approved").length;
- if(count>=35)return alert("This member already has 35 active tasks in this sub-tab.");
- const title=val("taskTitle");if(!title)return alert("Task title is required.");
- s.tasks.push({id:id("task"),title,desc:val("taskDesc"),assigned,status:"pending",reason:""});
- save();document.querySelector(".modal").remove();renderRoom()
+async function createTask(){
+  const assigned=document.getElementById("assign")?.value,title=val("taskTitle");
+  if(!assigned)return alert("Add a member first."); if(!title)return alert("Task title is required.");
+  const count=taskCache.filter(t=>t.assigned===assigned&&t.status!=="approved").length;if(count>=35)return alert("This member already has 35 active tasks in this sub-tab.");
+  try{await addDoc(collection(db,"rooms",rid,"tabs",tabCache[ti].id,"subs",subCache[si].id,"tasks"),{title,desc:val("taskDesc"),assigned,status:"pending",reason:"",createdAt:serverTimestamp()});document.querySelector(".modal")?.remove();await loadTasks();renderRoom()}catch(e){showError(e)}
 }
-function completeTask(id){
- const s=room().tabs[ti].subs[si],t=s.tasks.find(x=>x.id===id);if(!t)return;
- t.status="completed";save();renderRoom()
+async function completeTask(taskId){
+  try{await updateDoc(doc(db,"rooms",rid,"tabs",tabCache[ti].id,"subs",subCache[si].id,"tasks",taskId),{status:"completed",completedAt:serverTimestamp()});await loadTasks();renderRoom()}catch(e){showError(e)}
 }
-function approveTask(id){
- const t=room().tabs[ti].subs[si].tasks.find(x=>x.id===id);t.status="approved";save();renderRoom()
+async function approveTask(taskId){try{await updateDoc(doc(db,"rooms",rid,"tabs",tabCache[ti].id,"subs",subCache[si].id,"tasks",taskId),{status:"approved",reviewedAt:serverTimestamp(),reason:""});await loadTasks();renderRoom()}catch(e){showError(e)}}
+async function returnTask(taskId){const reason=prompt("Why are you returning this task?")||"";try{await updateDoc(doc(db,"rooms",rid,"tabs",tabCache[ti].id,"subs",subCache[si].id,"tasks",taskId),{status:"returned",reason,reviewedAt:serverTimestamp()});await loadTasks();renderRoom()}catch(e){showError(e)}}
+async function deleteTask(taskId){if(!confirm("Delete this task?"))return;try{await deleteDoc(doc(db,"rooms",rid,"tabs",tabCache[ti].id,"subs",subCache[si].id,"tasks",taskId));await loadTasks();renderRoom()}catch(e){showError(e)}}
+async function addMainTab(){
+  const name=prompt("Main tab name");if(!name)return;
+  try{
+    const batch=writeBatch(db);
+    const tabRef=doc(collection(db,"rooms",rid,"tabs"));
+    batch.set(tabRef,{name,order:tabCache.length,createdAt:serverTimestamp()});
+    for(let i=1;i<=6;i++){
+      const subRef=doc(collection(tabRef,"subs"));
+      batch.set(subRef,{name:`Sub-tab ${i}`,order:i-1});
+    }
+    await batch.commit();
+    await loadRoom();
+  }catch(e){showError(e)}
 }
-function returnTask(id){
- const t=room().tabs[ti].subs[si].tasks.find(x=>x.id===id);
- t.status="returned";t.reason=prompt("Why are you returning this task?")||"";save();renderRoom()
-}
-function deleteTask(id){
- if(!confirm("Delete this task?"))return;
- const s=room().tabs[ti].subs[si];s.tasks=s.tasks.filter(x=>x.id!==id);save();renderRoom()
-}
-function addMainTab(){
- const r=room(),name=prompt("Main tab name");if(!name)return;
- addTab(r,name);save();ti=r.tabs.length-1;si=0;renderRoom()
-}
-welcome();
+async function switchTab(i){ti=i;si=0;await loadRoom()}
+async function switchSub(i){si=i;await loadRoom()}
+
+window.register=register;window.login=login;window.doRegister=doRegister;window.doLogin=doLogin;window.logout=logout;window.home=home;
+window.createRoomModal=createRoomModal;window.joinRoomModal=joinRoomModal;window.createRoom=createRoom;window.joinRoom=joinRoom;
+window.openRoom=openRoom;window.taskModal=taskModal;window.createTask=createTask;window.completeTask=completeTask;window.approveTask=approveTask;window.returnTask=returnTask;window.deleteTask=deleteTask;window.addMainTab=addMainTab;window.switchTab=switchTab;window.switchSub=switchSub;
+
+onAuthStateChanged(auth, async user=>{currentUser=user;if(user){await home()}else{rid=null;roomCache=null;welcome()}});
