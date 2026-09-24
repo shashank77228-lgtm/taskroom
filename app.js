@@ -105,16 +105,25 @@ async function createRoom(){
     while(exists){code=String(Math.floor(100000+Math.random()*900000));exists=(await getDoc(doc(db,"roomCodes",code))).exists()}
     const roomRef=doc(collection(db,"rooms"));
     const passwordHash=await sha256(p);
-    const batch=writeBatch(db);
-    batch.set(roomRef,{name:n,code,host:currentUser.uid,createdAt:serverTimestamp()});
-    batch.set(doc(db,"roomCodes",code),{roomId:roomRef.id,passwordHash,createdAt:serverTimestamp()});
-    batch.set(doc(db,"rooms",roomRef.id,"members",currentUser.uid),{role:"host",joinedAt:serverTimestamp()});
+
+    // Create the room first. Firestore security rules need the room to exist
+    // before they can verify host permissions for its subcollections.
+    const roomBatch=writeBatch(db);
+    roomBatch.set(roomRef,{name:n,code,host:currentUser.uid,createdAt:serverTimestamp()});
+    roomBatch.set(doc(db,"roomCodes",code),{roomId:roomRef.id,passwordHash,createdAt:serverTimestamp()});
+    roomBatch.set(doc(db,"rooms",roomRef.id,"members",currentUser.uid),{role:"host",joinedAt:serverTimestamp()});
+    roomBatch.update(doc(db,"users",currentUser.uid),{roomIds:arrayUnion(roomRef.id)});
+    await roomBatch.commit();
+
+    // Now create the default main tab and exactly 6 sub-tabs.
+    const setupBatch=writeBatch(db);
     const tabRef=doc(collection(roomRef,"tabs"));
-    batch.set(tabRef,{name:"Study",order:0});
-    for(let i=1;i<=6;i++)batch.set(doc(collection(tabRef,"subs")),{name:"Sub-tab "+i,order:i-1});
-    const u=await getUserDoc();
-    batch.update(doc(db,"users",currentUser.uid),{roomIds:arrayUnion(roomRef.id)});
-    await batch.commit();
+    setupBatch.set(tabRef,{name:"Study",order:0,createdAt:serverTimestamp()});
+    for(let i=1;i<=6;i++){
+      setupBatch.set(doc(collection(tabRef,"subs")),{name:"Sub-tab "+i,order:i-1});
+    }
+    await setupBatch.commit();
+
     document.querySelector(".modal")?.remove(); await openRoom(roomRef.id);
   }catch(e){showError(e)}
 }
@@ -167,7 +176,7 @@ async function renderRoom(){
   for(const m of members){const u=await getDoc(doc(db,"users",m.id));if(u.exists())memberUsers[m.id]=u.data()}
   let html=`<div class="row between"><div><h2>${esc(roomCache.name)}</h2><small class="muted">Room ID: ${esc(roomCache.code)} • ${isHost()?"HOST":"MEMBER"}</small></div>${isHost()?B("+ Task","taskModal()","btn primary"):""}</div>`;
   html+=`<div class="tabs">${tabCache.map((x,i)=>`<button class="tab ${i===ti?"active":""}" onclick="switchTab(${i})">${esc(x.name)}</button>`).join("")}${isHost()?B("+ Tab","addMainTab()","btn"):""}</div>`;
-  html+=`<div class="subs">${subCache.map((x,i)=>{const count=taskCache.filter(z=>z.assigned===currentUser.uid&&z.status!=="approved").length;return `<button class="sub ${i===si?"active":""}" onclick="switchSub(${i})"><b>${esc(x.name)}</b><br><small>${i===si?count:""} active</small></button>`}).join("")}</div>`;
+  html+=`<div class="subs">${subCache.map((x,i)=>{const count=taskCache.filter(z=>z.assigned===currentUser.uid&&z.status!=="approved").length;return `<div class="sub-wrap"><button class="sub ${i===si?"active":""}" onclick="switchSub(${i})"><b>${esc(x.name)}</b><br><small>${i===si?count:""} active</small></button>${isHost()?`<button class="sub-edit" title="Rename sub-tab" onclick="event.stopPropagation();renameSubTab(${i})">✎</button>`:""}</div>`}).join("")}</div>`;
   html+=isHost()?hostView(memberUsers):memberView();
   shell(html);
 }
@@ -213,11 +222,22 @@ async function addMainTab(){
     await loadRoom();
   }catch(e){showError(e)}
 }
+async function renameSubTab(i){
+  if(!isHost())return;
+  const current=subCache[i];
+  if(!current)return;
+  const name=prompt("Enter new sub-tab name",current.name||"")?.trim();
+  if(!name || name===current.name)return;
+  try{
+    await updateDoc(doc(db,"rooms",rid,"tabs",tabCache[ti].id,"subs",current.id),{name});
+    await loadRoom();
+  }catch(e){showError(e)}
+}
 async function switchTab(i){ti=i;si=0;await loadRoom()}
 async function switchSub(i){si=i;await loadRoom()}
 
 window.register=register;window.login=login;window.doRegister=doRegister;window.doLogin=doLogin;window.logout=logout;window.home=home;
 window.createRoomModal=createRoomModal;window.joinRoomModal=joinRoomModal;window.createRoom=createRoom;window.joinRoom=joinRoom;
-window.openRoom=openRoom;window.taskModal=taskModal;window.createTask=createTask;window.completeTask=completeTask;window.approveTask=approveTask;window.returnTask=returnTask;window.deleteTask=deleteTask;window.addMainTab=addMainTab;window.switchTab=switchTab;window.switchSub=switchSub;
+window.openRoom=openRoom;window.renameSubTab=renameSubTab;window.taskModal=taskModal;window.createTask=createTask;window.completeTask=completeTask;window.approveTask=approveTask;window.returnTask=returnTask;window.deleteTask=deleteTask;window.addMainTab=addMainTab;window.switchTab=switchTab;window.switchSub=switchSub;
 
 onAuthStateChanged(auth, async user=>{currentUser=user;if(user){await home()}else{rid=null;roomCache=null;welcome()}});
