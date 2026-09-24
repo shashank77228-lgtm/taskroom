@@ -176,7 +176,7 @@ async function renderRoom(){
   for(const m of members){const u=await getDoc(doc(db,"users",m.id));if(u.exists())memberUsers[m.id]=u.data()}
   let html=`<div class="row between"><div><h2>${esc(roomCache.name)}</h2><small class="muted">Room ID: ${esc(roomCache.code)} • ${isHost()?"HOST":"MEMBER"}</small></div>${isHost()?B("+ Task","taskModal()","btn primary"):""}</div>`;
   html+=`<div class="tabs">${tabCache.map((x,i)=>`<button class="tab ${i===ti?"active":""}" onclick="switchTab(${i})">${esc(x.name)}</button>`).join("")}${isHost()?B("+ Tab","addMainTab()","btn"):""}</div>`;
-  html+=`<div class="subs">${subCache.map((x,i)=>{const count=taskCache.filter(z=>z.assigned===currentUser.uid&&z.status!=="approved").length;return `<div class="sub-wrap"><button class="sub ${i===si?"active":""}" onclick="switchSub(${i})"><b>${esc(x.name)}</b><br><small>${i===si?count:""} active</small></button>${isHost()?`<button class="sub-edit" title="Rename sub-tab" onclick="event.stopPropagation();renameSubTab(${i})">✎</button>`:""}</div>`}).join("")}</div>`;
+  html+=`<div class="subs">${subCache.map((x,i)=>{const count=taskCache.filter(z=>z.assigned===currentUser.uid&&z.status!=="approved").length;return `<button class="sub ${i===si?"active":""}" onclick="switchSub(${i})"><b>${esc(x.name)}</b><br><small>${i===si?count:""} active</small></button>`}).join("")}</div>`;
   html+=isHost()?hostView(memberUsers):memberView();
   shell(html);
 }
@@ -222,22 +222,11 @@ async function addMainTab(){
     await loadRoom();
   }catch(e){showError(e)}
 }
-async function renameSubTab(i){
-  if(!isHost())return;
-  const current=subCache[i];
-  if(!current)return;
-  const name=prompt("Enter new sub-tab name",current.name||"")?.trim();
-  if(!name || name===current.name)return;
-  try{
-    await updateDoc(doc(db,"rooms",rid,"tabs",tabCache[ti].id,"subs",current.id),{name});
-    await loadRoom();
-  }catch(e){showError(e)}
-}
 async function switchTab(i){ti=i;si=0;await loadRoom()}
 async function switchSub(i){si=i;await loadRoom()}
 
 window.register=register;window.login=login;window.doRegister=doRegister;window.doLogin=doLogin;window.logout=logout;window.home=home;
 window.createRoomModal=createRoomModal;window.joinRoomModal=joinRoomModal;window.createRoom=createRoom;window.joinRoom=joinRoom;
-window.openRoom=openRoom;window.renameSubTab=renameSubTab;window.taskModal=taskModal;window.createTask=createTask;window.completeTask=completeTask;window.approveTask=approveTask;window.returnTask=returnTask;window.deleteTask=deleteTask;window.addMainTab=addMainTab;window.switchTab=switchTab;window.switchSub=switchSub;
+window.openRoom=openRoom;window.taskModal=taskModal;window.createTask=createTask;window.completeTask=completeTask;window.approveTask=approveTask;window.returnTask=returnTask;window.deleteTask=deleteTask;window.addMainTab=addMainTab;window.switchTab=switchTab;window.switchSub=switchSub;
 
 onAuthStateChanged(auth, async user=>{currentUser=user;if(user){await home()}else{rid=null;roomCache=null;welcome()}});
