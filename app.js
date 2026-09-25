@@ -6,7 +6,7 @@ import {
 import {
   getFirestore, doc, getDoc, setDoc, updateDoc, deleteDoc,
   collection, getDocs, addDoc, query, where, orderBy,
-  serverTimestamp, arrayUnion, writeBatch
+  serverTimestamp, arrayUnion, arrayRemove, writeBatch
 } from "https://www.gstatic.com/firebasejs/12.19.0/firebase-firestore.js";
 
 const firebaseConfig = {
@@ -184,7 +184,7 @@ async function renderRoom(){
   const members=membersSnap.docs.map(x=>({id:x.id,...x.data()}));
   const memberUsers={};
   for(const m of members){const u=await getDoc(doc(db,"users",m.id));if(u.exists())memberUsers[m.id]=u.data()}
-  let html=`<div class="row between"><div><h2>${esc(roomCache.name)}</h2><small class="muted">Room ID: ${esc(roomCache.code)} • ${isHost()?"HOST":"MEMBER"}</small></div>${isHost()?B("+ Task","taskModal()","btn primary"):""}</div>`;
+  let html=`<div class="row between"><div><h2>${esc(roomCache.name)}</h2><small class="muted">Room ID: ${esc(roomCache.code)} • ${isHost()?"HOST":"MEMBER"}</small></div><div class="row">${isHost()?B("+ Task","taskModal()","btn primary"):""}${isHost()?B("Delete room","deleteRoom()","btn danger"):""}</div></div>`;
   html+=`<div class="tabs">${tabCache.map((x,i)=>`<button class="tab ${i===ti?"active":""}" onclick="switchTab(${i})">${esc(x.name)}</button>`).join("")}${isHost()?B("+ Tab","addMainTab()","btn"):""}</div>`;
   html+=`<div class="subs">${subCache.map((x,i)=>{const count=taskCache.filter(z=>z.assigned===currentUser.uid&&z.status!=="approved").length;return `<div class="sub-wrap"><button class="sub ${i===si?"active":""}" onclick="switchSub(${i})"><b>${esc(x.name)}</b><br><small>${i===si?count:""} active</small></button>${isHost()?`<button class="sub-edit" title="Rename sub-tab" onclick="event.stopPropagation();renameSubTab(${i})">✎</button>`:""}</div>`}).join("")}</div>`;
   html+=isHost()?hostView(memberUsers):memberView();
@@ -218,6 +218,41 @@ async function completeTask(taskId){
 async function approveTask(taskId){try{await updateDoc(doc(db,"rooms",rid,"tabs",tabCache[ti].id,"subs",subCache[si].id,"tasks",taskId),{status:"approved",reviewedAt:serverTimestamp(),reason:""});await loadTasks();renderRoom()}catch(e){showError(e)}}
 async function returnTask(taskId){const reason=prompt("Why are you returning this task?")||"";try{await updateDoc(doc(db,"rooms",rid,"tabs",tabCache[ti].id,"subs",subCache[si].id,"tasks",taskId),{status:"returned",reason,reviewedAt:serverTimestamp()});await loadTasks();renderRoom()}catch(e){showError(e)}}
 async function deleteTask(taskId){if(!confirm("Delete this task?"))return;try{await deleteDoc(doc(db,"rooms",rid,"tabs",tabCache[ti].id,"subs",subCache[si].id,"tasks",taskId));await loadTasks();renderRoom()}catch(e){showError(e)}}
+
+async function deleteRoom(){
+  if(!isHost())return;
+  const roomId=rid, roomName=roomCache?.name||"this room", code=roomCache?.code;
+  if(!confirm(`Delete room "${roomName}" permanently?\n\nThis will remove the room, members, tabs, sub-tabs and tasks. This cannot be undone.`))return;
+  try{
+    loading("Deleting room…");
+    // Capture members before deleting them so their home lists can be cleaned.
+    const membersSnap=await getDocs(collection(db,"rooms",roomId,"members"));
+    const memberIds=membersSnap.docs.map(d=>d.id);
+
+    // Delete every task, sub-tab, tab and member. Firestore does not cascade deletes.
+    const tabsSnap=await getDocs(collection(db,"rooms",roomId,"tabs"));
+    for(const tab of tabsSnap.docs){
+      const subsSnap=await getDocs(collection(db,"rooms",roomId,"tabs",tab.id,"subs"));
+      for(const sub of subsSnap.docs){
+        const tasksSnap=await getDocs(collection(db,"rooms",roomId,"tabs",tab.id,"subs",sub.id,"tasks"));
+        for(const task of tasksSnap.docs){
+          await deleteDoc(doc(db,"rooms",roomId,"tabs",tab.id,"subs",sub.id,"tasks",task.id));
+        }
+        await deleteDoc(doc(db,"rooms",roomId,"tabs",tab.id,"subs",sub.id));
+      }
+      await deleteDoc(doc(db,"rooms",roomId,"tabs",tab.id));
+    }
+    for(const memberId of memberIds){
+      await deleteDoc(doc(db,"rooms",roomId,"members",memberId));
+      try{await updateDoc(doc(db,"users",memberId),{roomIds:arrayRemove(roomId)});}catch(e){console.warn("Could not clean user room list",memberId,e)}
+    }
+    if(code)await deleteDoc(doc(db,"roomCodes",code));
+    await deleteDoc(doc(db,"rooms",roomId));
+    rid=null; roomCache=null; tabCache=[]; subCache=[]; taskCache=[];
+    await home();
+    alert("Room deleted successfully.");
+  }catch(e){showError(e);await home();}
+}
 async function addMainTab(){
   const name=prompt("Main tab name");if(!name)return;
   try{
