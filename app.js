@@ -152,29 +152,44 @@ async function createRoom(){
   }catch(e){showError(e)}
 }
 async function joinRoom(){
-  const code=val("joinCode"),p=val("joinPass");
+  const code=val("joinCode").replace(/\s/g,"").toUpperCase(),p=val("joinPass");
   if(!code||!p)return alert("Enter Room ID and password.");
   try{
+    if(!currentUser)return alert("Please log in again.");
+
+    // 1) Verify the room code and password first.
     const codeSnap=await getDoc(doc(db,"roomCodes",code));
     if(!codeSnap.exists())return alert("Room ID or password is incorrect.");
 
     const codeData=codeSnap.data();
     const hash=await sha256(p);
     if(hash!==codeData.passwordHash)return alert("Room ID or password is incorrect.");
+    if(!codeData.roomId)return alert("This room code is invalid.");
 
+    // 2) Create membership ONLY if it does not already exist.
+    // setDoc() does not throw for an existing document, so checking first
+    // prevents accidentally changing a host into a member.
     const memberRef=doc(db,"rooms",codeData.roomId,"members",currentUser.uid);
-    try{
-      // A new member creates their own membership. If it already exists,
-      // the user is already a member and we can safely continue.
+    const memberSnap=await getDoc(memberRef);
+    if(!memberSnap.exists()){
       await setDoc(memberRef,{role:"member",joinedAt:serverTimestamp()});
-    }catch(memberErr){
-      if(memberErr?.code !== "already-exists") throw memberErr;
     }
 
-    await updateDoc(doc(db,"users",currentUser.uid),{roomIds:arrayUnion(codeData.roomId)});
+    // 3) Do not require the users/{uid} document to already exist.
+    // This fixes accounts created during an earlier/partial registration.
+    await setDoc(doc(db,"users",currentUser.uid),{
+      name:currentUser.displayName||"User",
+      email:currentUser.email||"",
+      roomIds:arrayUnion(codeData.roomId)
+    },{merge:true});
+
+    // 4) Only open the room after membership is confirmed.
     document.querySelector(".modal")?.remove();
     await openRoom(codeData.roomId);
-  }catch(e){showError(e)}
+  }catch(e){
+    console.error("JOIN ROOM FAILED:",e);
+    showError(e);
+  }
 }
 
 async function openRoom(id0){rid=id0;ti=0;si=0;await loadRoom();}
