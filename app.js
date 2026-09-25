@@ -94,14 +94,10 @@ async function home(){
         validRoomIds.push(id0);
         continue;
       }
-      try{
-        const m=await getDoc(doc(db,"rooms",id0,"members",currentUser.uid));
-        if(m.exists()){
-          rooms.push({id:id0,...r});
-          validRoomIds.push(id0);
-        }
-      }catch(e){
-        // Stale roomIds from an incomplete old join are ignored.
+      const m=await getDoc(doc(db,"rooms",id0,"members",currentUser.uid));
+      if(m.exists()){
+        rooms.push({id:id0,...r});
+        validRoomIds.push(id0);
       }
     }
     if(validRoomIds.length !== ids.length){
@@ -152,44 +148,25 @@ async function createRoom(){
   }catch(e){showError(e)}
 }
 async function joinRoom(){
-  const code=val("joinCode").replace(/\s/g,"").toUpperCase(),p=val("joinPass");
+  const code=val("joinCode"),p=val("joinPass");
   if(!code||!p)return alert("Enter Room ID and password.");
   try{
-    if(!currentUser)return alert("Please log in again.");
-
-    // 1) Verify the room code and password first.
     const codeSnap=await getDoc(doc(db,"roomCodes",code));
     if(!codeSnap.exists())return alert("Room ID or password is incorrect.");
 
     const codeData=codeSnap.data();
     const hash=await sha256(p);
     if(hash!==codeData.passwordHash)return alert("Room ID or password is incorrect.");
-    if(!codeData.roomId)return alert("This room code is invalid.");
 
-    // 2) Create membership ONLY if it does not already exist.
-    // setDoc() does not throw for an existing document, so checking first
-    // prevents accidentally changing a host into a member.
     const memberRef=doc(db,"rooms",codeData.roomId,"members",currentUser.uid);
-    const memberSnap=await getDoc(memberRef);
-    if(!memberSnap.exists()){
-      await setDoc(memberRef,{role:"member",joinedAt:serverTimestamp()});
-    }
+    // Creating the same document again is safe and keeps the join flow from
+    // needing a membership read before the user has access to that document.
+    await setDoc(memberRef,{role:"member",joinedAt:serverTimestamp()},{merge:true});
 
-    // 3) Do not require the users/{uid} document to already exist.
-    // This fixes accounts created during an earlier/partial registration.
-    await setDoc(doc(db,"users",currentUser.uid),{
-      name:currentUser.displayName||"User",
-      email:currentUser.email||"",
-      roomIds:arrayUnion(codeData.roomId)
-    },{merge:true});
-
-    // 4) Only open the room after membership is confirmed.
+    await updateDoc(doc(db,"users",currentUser.uid),{roomIds:arrayUnion(codeData.roomId)});
     document.querySelector(".modal")?.remove();
     await openRoom(codeData.roomId);
-  }catch(e){
-    console.error("JOIN ROOM FAILED:",e);
-    showError(e);
-  }
+  }catch(e){showError(e)}
 }
 
 async function openRoom(id0){rid=id0;ti=0;si=0;await loadRoom();}
@@ -212,11 +189,8 @@ async function loadRoom(){
 async function loadTasks(){
   const s=subCache[si]; if(!s){taskCache=[];return}
   const tasksRef=collection(db,"rooms",rid,"tabs",tabCache[ti].id,"subs",s.id,"tasks");
-  // Members must query only their own assigned tasks so the query matches
-  // the Firestore rule. Hosts can read the whole task collection.
-  const snap=isHost()
-    ? await getDocs(tasksRef)
-    : await getDocs(query(tasksRef,where("assigned","==",currentUser.uid)));
+  const q=isHost() ? tasksRef : query(tasksRef,where("assigned","==",currentUser.uid));
+  const snap=await getDocs(q);
   taskCache=snap.docs.map(x=>({id:x.id,...x.data()}));
 }
 function isHost(){return roomCache?.host===currentUser?.uid}
@@ -333,4 +307,21 @@ window.register=register;window.login=login;window.doRegister=doRegister;window.
 window.createRoomModal=createRoomModal;window.joinRoomModal=joinRoomModal;window.createRoom=createRoom;window.joinRoom=joinRoom;
 window.openRoom=openRoom;window.renameSubTab=renameSubTab;window.taskModal=taskModal;window.createTask=createTask;window.completeTask=completeTask;window.approveTask=approveTask;window.returnTask=returnTask;window.deleteTask=deleteTask;window.deleteRoom=deleteRoom;window.addMainTab=addMainTab;window.switchTab=switchTab;window.switchSub=switchSub;
 
-onAuthStateChanged(auth, async user=>{currentUser=user;if(user){await home()}else{rid=null;roomCache=null;welcome()}});
+let authStarted=false;
+onAuthStateChanged(auth, async user=>{
+  authStarted=true;
+  try{
+    currentUser=user;
+    if(user){await home()}
+    else{rid=null;roomCache=null;welcome()}
+  }catch(e){
+    console.error("STARTUP FAILED:",e);
+    showError(e);
+    if(!currentUser) welcome();
+  }
+});
+setTimeout(()=>{
+  if(!authStarted && A.innerText.includes("Loading TaskRoom")){
+    A.innerHTML='<div class="card" style="margin:24px"><h2>TaskRoom could not start</h2><p class="muted">Please refresh the page. If it still happens, the Firebase connection or browser cache needs to be refreshed.</p><button class="btn primary" onclick="location.reload()">Refresh TaskRoom</button></div>';
+  }
+},8000);
