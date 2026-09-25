@@ -211,7 +211,12 @@ async function loadRoom(){
 }
 async function loadTasks(){
   const s=subCache[si]; if(!s){taskCache=[];return}
-  const snap=await getDocs(collection(db,"rooms",rid,"tabs",tabCache[ti].id,"subs",s.id,"tasks"));
+  const tasksRef=collection(db,"rooms",rid,"tabs",tabCache[ti].id,"subs",s.id,"tasks");
+  // Members must query only their own assigned tasks so the query matches
+  // the Firestore rule. Hosts can read the whole task collection.
+  const snap=isHost()
+    ? await getDocs(tasksRef)
+    : await getDocs(query(tasksRef,where("assigned","==",currentUser.uid)));
   taskCache=snap.docs.map(x=>({id:x.id,...x.data()}));
 }
 function isHost(){return roomCache?.host===currentUser?.uid}
