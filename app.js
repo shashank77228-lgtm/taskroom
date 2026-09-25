@@ -198,10 +198,17 @@ function isHost(){return roomCache?.host===currentUser?.uid}
 async function renderRoom(){
   if(!roomCache)return;
   const t=tabCache[ti],s=subCache[si];
-  const membersSnap=await getDocs(collection(db,"rooms",rid,"members"));
-  const members=membersSnap.docs.map(x=>({id:x.id,...x.data()}));
+  // Members may only read their own user document. Only the host needs the
+  // member list and other users' names for the host review panel.
   const memberUsers={};
-  for(const m of members){const u=await getDoc(doc(db,"users",m.id));if(u.exists())memberUsers[m.id]=u.data()}
+  if(isHost()){
+    const membersSnap=await getDocs(collection(db,"rooms",rid,"members"));
+    const members=membersSnap.docs.map(x=>({id:x.id,...x.data()}));
+    for(const m of members){
+      const u=await getDoc(doc(db,"users",m.id));
+      if(u.exists())memberUsers[m.id]=u.data();
+    }
+  }
   let html=`<div class="row between"><div><h2>${esc(roomCache.name)}</h2><small class="muted">Room ID: ${esc(roomCache.code)} • ${isHost()?"HOST":"MEMBER"}</small></div><div class="row">${isHost()?B("+ Task","taskModal()","btn primary"):""}${isHost()?B("Delete room","deleteRoom()","btn danger"):""}</div></div>`;
   html+=`<div class="tabs">${tabCache.map((x,i)=>`<button class="tab ${i===ti?"active":""}" onclick="switchTab(${i})">${esc(x.name)}</button>`).join("")}${isHost()?B("+ Tab","addMainTab()","btn"):""}</div>`;
   html+=`<div class="subs">${subCache.map((x,i)=>{const count=taskCache.filter(z=>z.assigned===currentUser.uid&&z.status!=="approved").length;return `<div class="sub-wrap"><button class="sub ${i===si?"active":""}" onclick="switchSub(${i})"><b>${esc(x.name)}</b><br><small>${i===si?count:""} active</small></button>${isHost()?`<button class="sub-edit" title="Rename sub-tab" onclick="event.stopPropagation();renameSubTab(${i})">✎</button>`:""}</div>`}).join("")}</div>`;
