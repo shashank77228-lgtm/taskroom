@@ -140,7 +140,14 @@ async function joinRoom(){
     // rules intentionally restrict room reads to existing members/host.
     // The roomCodes document already gives us the roomId after password check.
     const memberRef=doc(db,"rooms",codeData.roomId,"members",currentUser.uid);
-    await setDoc(memberRef,{role:"member",joinedAt:serverTimestamp()},{merge:true});
+    // Create the membership if it does not exist yet. If a previous join
+    // attempt already created it, Firestore returns already-exists; that is
+    // safe to ignore and we continue with the user's room list update.
+    try{
+      await setDoc(memberRef,{role:"member",joinedAt:serverTimestamp()});
+    }catch(memberErr){
+      if(memberErr?.code !== "already-exists") throw memberErr;
+    }
     await updateDoc(doc(db,"users",currentUser.uid),{roomIds:arrayUnion(codeData.roomId)});
     document.querySelector(".modal")?.remove(); await openRoom(codeData.roomId);
   }catch(e){showError(e)}
