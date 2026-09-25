@@ -1,27 +1,41 @@
-# TaskRoom Phone Web App
+# TaskRoom — Firebase version
 
-This is the first phone-accessible prototype.
+TaskRoom is a phone-friendly task tracking web app using Firebase Authentication and Cloud Firestore.
 
-Features included:
-- Create account / login demo
-- Create room with Room ID + password
-- Join room
+## Included
+- Cross-device email/password accounts
+- Cloud-synced rooms
 - Host/member roles
-- Main tabs
-- Exactly 6 sub-tabs per main tab
-- Host task assignment
-- 35 active-task limit per member per sub-tab
-- Member task completion
-- Completed tasks disappear from member active list
-- Host approve / return workflow
+- 6 sub-tabs created automatically for every main tab
+- Host-created tasks
+- Maximum 35 active tasks per member per sub-tab
+- Member completion flow
+- Host approve / return flow
 - Returned tasks reappear for the member
-- Browser localStorage persistence
-- PWA manifest
+- Firestore security rules
+- GitHub Pages compatible (no build step required)
 
-IMPORTANT:
-This is a prototype. Data is stored in the browser's localStorage. It is not secure and it does not synchronize between different phones.
+## Firebase setup
+This version uses Firebase JavaScript SDK 12.19.0 from the official CDN.
+The Firebase web config is in `app.js`.
 
-Production version:
-Firebase Authentication + Cloud Firestore + backend security rules.
+In Firebase Console:
+1. Authentication → Sign-in method → Email/Password: Enabled
+2. Firestore Database: created in production mode
+3. Firestore → Rules: paste the contents of `firestore.rules` and Publish
 
-To use this as a real phone app, the files need to be uploaded to an HTTPS web host. Then open the site in Chrome and choose "Add to Home screen".
+## Important security note
+The current phone-friendly MVP verifies the room password in the browser using a SHA-256 hash stored in `roomCodes`. This is suitable for the current prototype but is not the final production-grade join system. A future Cloud Function/server-side join endpoint should perform room-password verification and membership creation server-side.
+
+Do not put Firebase Admin SDK credentials or service-account private keys in this website.
+
+## Deploy on GitHub Pages
+Upload/replace these files in the repository root:
+- index.html
+- app.js
+- style.css
+- manifest.json
+- firestore.rules (for reference; publish its contents in Firebase Console)
+- README.md
+
+Existing localStorage demo accounts are not automatically migrated to Firebase. Create the accounts again in the new Firebase version.
