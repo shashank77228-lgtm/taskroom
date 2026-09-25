@@ -136,8 +136,9 @@ async function joinRoom(){
     if(!codeSnap.exists())return alert("Room ID or password is incorrect.");
     const codeData=codeSnap.data(), hash=await sha256(p);
     if(hash!==codeData.passwordHash)return alert("Room ID or password is incorrect.");
-    const roomRef=doc(db,"rooms",codeData.roomId), roomSnap=await getDoc(roomRef);
-    if(!roomSnap.exists())return alert("That room no longer exists.");
+    // Do not read the room document before membership exists: the Firestore
+    // rules intentionally restrict room reads to existing members/host.
+    // The roomCodes document already gives us the roomId after password check.
     const memberRef=doc(db,"rooms",codeData.roomId,"members",currentUser.uid);
     await setDoc(memberRef,{role:"member",joinedAt:serverTimestamp()},{merge:true});
     await updateDoc(doc(db,"users",currentUser.uid),{roomIds:arrayUnion(codeData.roomId)});
